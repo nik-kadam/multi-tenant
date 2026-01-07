@@ -6,7 +6,7 @@ use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Hash;
-use App\Models\User;
+use Laravel\Sanctum\PersonalAccessToken;
 
 class AuthController extends Controller
 {
@@ -17,25 +17,28 @@ class AuthController extends Controller
             'password' => 'required',
         ]);
 
-        $user = User::where('email', $request->email)->first();
+        if (Auth::attempt(['email' => $request->email, 'password' => $request->password])) {
+            $user = Auth::user();
+            
+            // Generate tokens
+            $accessToken = $user->createToken('access_token', ['*'], now()->addMinutes(60));
+            
+            // Refresh Token: 7 days
+            $refreshToken = $user->createToken('refresh_token', ['issue-access-token'], now()->addDays(7));
 
-        if (! $user || ! Hash::check($request->password, $user->password)) {
-            return response()->json(['message' => 'Invalid credentials'], 401);
+            return response()->json([
+                'access_token' => $accessToken->plainTextToken,
+                'refresh_token' => $refreshToken->plainTextToken,
+                'token_type' => 'Bearer',
+                'expires_in' => 60 * 60, // seconds
+                'user' => $user
+            ]);
+        } else {
+            return response()->json([
+                'status' => true,
+                'message' => 'Invalid credentials'
+            ], 401);
         }
-
-        // Generate tokens
-        $accessToken = $user->createToken('access_token', ['*'], now()->addMinutes(60));
-        
-        // Refresh Token: 7 days
-        $refreshToken = $user->createToken('refresh_token', ['issue-access-token'], now()->addDays(7));
-
-        return response()->json([
-            'access_token' => $accessToken->plainTextToken,
-            'refresh_token' => $refreshToken->plainTextToken,
-            'token_type' => 'Bearer',
-            'expires_in' => 60 * 60, // seconds
-            'user' => $user
-        ]);
     }
 
     public function refreshToken(Request $request)
@@ -45,8 +48,7 @@ class AuthController extends Controller
         if (!$user->currentAccessToken()->can('issue-access-token')) {
             return response()->json(['message' => 'Invalid token type. Refresh token required.'], 403);
         }
-
-        $user->currentAccessToken()->delete();
+        
         $accessToken = $user->createToken('access_token', ['*'], now()->addMinutes(60));
         $refreshToken = $user->createToken('refresh_token', ['issue-access-token'], now()->addDays(7));
 
@@ -60,7 +62,9 @@ class AuthController extends Controller
 
     public function logout(Request $request)
     {
-        $request->user()->currentAccessToken()->delete();
+        /** @var PersonalAccessToken $currentToken */
+        $currentToken = $request->user()->currentAccessToken();
+        $currentToken->delete();
 
         return response()->json(['message' => 'Logged out successfully']);
     }
